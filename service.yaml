@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jakubsnative-service
+  namespace: "default"
+  annotations:
+    beta.cloud.google.com/backend-config: '{"ports": {"80":"ws-backendconfig"}}'
+spec:
+  type: NodePort
+  selector:
+    run: "jakubsnative"
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
