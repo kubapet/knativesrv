@@ -3,7 +3,9 @@
 - Clone, build and run this demo webserver application
 
 ```
-git clone https://github.com/kubapet/knativesrv/tree/ktorbug . 
+git clone https://github.com/kubapet/knativesrv.git
+cd knativesrv
+git checkout ktorbug
 ./gradlew linkDebugExecutableLinuxX64
 cp ./build/bin/linuxX64/debugExecutable/nativeweb.kexe ./server.kexe
 ./server.kexe 8080
