@@ -40,11 +40,11 @@ class Logger(
     ) {
         val actualSeverity = severity ?: defaultSeverity
         val color = forcedColor ?: when(actualSeverity) {
-            INFO -> BrightGreenTxt
             WARN -> BrightYellowTxt
             ERROR -> BrightRedTxt
             SEVERE -> BrightRedTxt
             DEBUG -> BrightWhiteTxt
+            else -> null
         }
         val logRecord = LogRecord(actualSeverity, message, context ?: defaultContext, color)
         val output = if(useErr && severity in listOf(ERROR, SEVERE)) err else std

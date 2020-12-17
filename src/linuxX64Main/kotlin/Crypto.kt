@@ -3,52 +3,72 @@ import kotlinx.cinterop.*
 import libopenssl.*
 import platform.posix.*
 
-class RSAKeyPair private constructor(val rsa: CValuesRef<RSA>) {
-
+class RSAKeyPair private constructor(private val rsa: CValuesRef<RSA>) {
     val keyId = uuid4().toString()
 
-    private val pkey by lazy {
-        memScoped {
+    private val pkey by lazy { memScoped {
             val pkey = EVP_PKEY_new()
             EVP_PKEY_assign(pkey, EVP_PKEY_RSA, rsa)
             pkey
-        }
-    }
+    } }
 
-    val privateKey by lazy {
-        memScoped {
+    val privateKeyPem by lazy { memScoped {
             val privateBIO = BIO_new(BIO_s_mem())
             PEM_write_bio_PrivateKey(privateBIO, pkey, null, null, 0, null, null)
+            privateBIO?.toKString()
+    } }
 
-            val privateKeyLen = BIO_ctrl(privateBIO, BIO_CTRL_PENDING, 0, null)
-            val privateKeyChar = allocArray<ByteVar>(privateKeyLen)
-            BIO_read(privateBIO, privateKeyChar, privateKeyLen.convert())
-            privateKeyChar.toKString()
-        }
-    }
-
-    val publicKey by lazy {
-        memScoped {
+    val publicKeyPem by lazy { memScoped {
             val publicBIO = BIO_new(BIO_s_mem())
             PEM_write_bio_PUBKEY(publicBIO, pkey)
+            publicBIO?.toKString()
+    } }
 
-            val publicKeyLen = BIO_ctrl(publicBIO, BIO_CTRL_PENDING, 0, null)
-            val publicKeyChar = allocArray<ByteVar>(publicKeyLen)
-            BIO_read(publicBIO, publicKeyChar, publicKeyLen.convert())
-            publicKeyChar.toKString()
-        }
-    }
-
-    val publicExponent by lazy {
-        memScoped {
+    val publicExponent by lazy { memScoped {
             bigNumToByteArray(rsa.getPointer(this).pointed.e)
-        }
+    } }
+
+    val modulus by lazy { memScoped {
+            bigNumToByteArray(rsa.getPointer(this).pointed.n)
+    } }
+
+    fun rs256Signature(input: String): UByteArray = memScoped {
+        val sha256 = allocArray<UByteVar>(SHA256_DIGEST_LENGTH)
+        SHA256(input.cstr.ptr.reinterpret(), input.length.convert(), sha256)
+
+        val signature = allocArray<UByteVar>(RSA_size(rsa))
+        val length = alloc<UIntVar>()
+        RSA_sign(NID_sha256, sha256, SHA256_DIGEST_LENGTH, signature, length.ptr, rsa)
+
+        return signature.readBytes(length.value.convert()).asUByteArray()
     }
 
-    val modulus by lazy {
-        memScoped {
-            bigNumToByteArray(rsa.getPointer(this).pointed.n)
-        }
+    fun verifyRs256Signature(input: String, signature: UByteArray): Boolean = memScoped {
+        val sha256 = allocArray<UByteVar>(SHA256_DIGEST_LENGTH)
+        SHA256(input.cstr.ptr.reinterpret(), input.length.convert(), sha256)
+
+        RSA_verify(
+            NID_sha256,
+            sha256,
+            SHA256_DIGEST_LENGTH,
+            signature.toCValues().ptr.reinterpret(),
+            signature.size.convert(),
+            rsa
+        ) == 1
+    }
+
+    private fun bigNumToByteArray(bigNum: CValuesRef<BIGNUM>?): UByteArray = memScoped {
+        val length = (BN_num_bits(bigNum) + 7) / 8
+        val buffer = allocArray<UByteVar>(length)
+        BN_bn2bin(bigNum, buffer)
+        buffer.readBytes(length).asUByteArray()
+    }
+
+    private fun CPointer<BIO>.toKString() = memScoped {
+        val publicKeyLen = BIO_ctrl(this@toKString, BIO_CTRL_PENDING, 0, null)
+        val publicKeyChar = allocArray<ByteVar>(publicKeyLen)
+        BIO_read(this@toKString, publicKeyChar, publicKeyLen.convert())
+        publicKeyChar.toKString()
     }
 
     companion object {
@@ -72,38 +92,6 @@ class RSAKeyPair private constructor(val rsa: CValuesRef<RSA>) {
 
             return RSAKeyPair(rsa!!)
         }
-    }
-
-    private fun bigNumToByteArray(bigNum: CValuesRef<BIGNUM>?): UByteArray = memScoped {
-        val length = (BN_num_bits(bigNum) + 7) / 8
-        val buffer = allocArray<UByteVar>(length)
-        BN_bn2bin(bigNum, buffer)
-        buffer.readBytes(length).asUByteArray()
-    }
-
-    fun rs256Signature(input: String): UByteArray = memScoped {
-        val sha256 = allocArray<UByteVar>(SHA256_DIGEST_LENGTH)
-        SHA256(input.cstr.ptr.reinterpret(), input.length.convert(), sha256)
-
-        val sigret = allocArray<UByteVar>(RSA_size(rsa))
-        val siglen = alloc<UIntVar>()
-        RSA_sign(NID_sha256, sha256, SHA256_DIGEST_LENGTH, sigret, siglen.ptr, rsa)
-
-        return sigret.readBytes(siglen.value.convert()).asUByteArray()
-    }
-
-    fun verifyRs256Signature(input: String, signature: UByteArray): Boolean = memScoped {
-        val sha256 = allocArray<UByteVar>(SHA256_DIGEST_LENGTH)
-        SHA256(input.cstr.ptr.reinterpret(), input.length.convert(), sha256)
-
-        RSA_verify(
-            NID_sha256,
-            sha256,
-            SHA256_DIGEST_LENGTH,
-            signature.toCValues().ptr.reinterpret(),
-            signature.size.convert(),
-            rsa
-        ) == 1
     }
 }
 
