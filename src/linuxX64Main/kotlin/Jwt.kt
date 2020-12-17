@@ -1,14 +1,12 @@
 import io.ktor.client.*
 import io.ktor.client.engine.curl.*
 import io.ktor.client.request.*
-import kotlinx.cinterop.*
+import kotlinx.datetime.Clock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import platform.posix.gettimeofday
-import platform.posix.timeval
 
 @Serializable
 data class JwtHeader(val alg: String, val typ: String, val kid: String)
@@ -41,7 +39,7 @@ data class Jwt(
 }
 
 fun getToken(selfUrl: String, targetUrl: String, rsaKeyPair: RSAKeyPair): Jwt {
-    val currTimestamp = epochMillis()
+    val currTimestamp = Clock.System.now().epochSeconds
     return Jwt(
         alg = "RS256",
         typ = "JWT",
@@ -52,12 +50,6 @@ fun getToken(selfUrl: String, targetUrl: String, rsaKeyPair: RSAKeyPair): Jwt {
         exp = currTimestamp + 30,
         rsaKeyPair = rsaKeyPair
     )
-}
-
-fun epochMillis(): Long = memScoped {
-    val timeVal = alloc<timeval>()
-    gettimeofday(timeVal.ptr, null)
-    timeVal.tv_sec
 }
 
 data class AuthorizationResult(val status: HttpStatus, val message: String = "", val token: Jwt? = null)

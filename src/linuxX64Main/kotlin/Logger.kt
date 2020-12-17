@@ -1,6 +1,7 @@
+import Severity.*
 import TextColors.*
 import kotlinx.cinterop.*
-import libopenssl.SHA256_DIGEST_LENGTH
+import kotlinx.datetime.Clock
 import platform.posix.*
 
 enum class TextColors(private val value: String) {
@@ -13,27 +14,43 @@ enum class TextColors(private val value: String) {
     override fun toString(): String = "\u001B[${value}m"
 }
 
-class Logger(private val std: CValuesRef<FILE>?,private val err: CValuesRef<FILE>?) {
-    private fun writeLine(message: String, output: CValuesRef<FILE>?) {
+enum class Severity {
+    INFO, WARN, ERROR, SEVERE, DEBUG
+}
+
+data class LogRecord(val severity: Severity, val message: Any, val context: Any, var color: TextColors? = null)
+
+class Logger(
+    private val formatter: LogRecord.() -> String = {
+        val formattedMessage = "[${Clock.System.now()}] [${severity.name}] [$context] $message"
+        if (color != null) "$color$formattedMessage$DefaultTxt\n" else "$formattedMessage\n"
+    },
+    private val defaultSeverity: Severity = INFO,
+    private val defaultContext: String = "main",
+    private val useErr: Boolean = true,
+    private val std: CValuesRef<FILE>? = stdout,
+    private val err: CValuesRef<FILE>? = stderr
+) {
+
+    operator fun invoke(
+        severity: Severity? = null,
+        message: Any = "",
+        context: Any? = null,
+        forcedColor: TextColors? = null
+    ) {
+        val actualSeverity = severity ?: defaultSeverity
+        val color = forcedColor ?: when(actualSeverity) {
+            INFO -> BrightGreenTxt
+            WARN -> BrightYellowTxt
+            ERROR -> BrightRedTxt
+            SEVERE -> BrightRedTxt
+            DEBUG -> BrightWhiteTxt
+        }
+        val logRecord = LogRecord(actualSeverity, message, context ?: defaultContext, color)
+        val output = if(useErr && severity in listOf(ERROR, SEVERE)) err else std
         if (output != null) {
-            fprintf(std, "$message\n")
-            fflush(std)
+            fprintf(output, formatter(logRecord))
+            fflush(output)
         }
     }
-
-    private fun writeColoredLine(message: Any, color: TextColors, output: CValuesRef<FILE>?) =
-        writeLine("$color$message$DefaultTxt", output)
-
-    fun info(sender: String, message: String): Logger =
-        this.also { writeLine("[$sender] $message", std) }
-    fun warn(sender: String, message: String): Logger =
-        this.also { writeColoredLine("[$sender] $message", BrightYellowTxt, std) }
-    fun error(sender: String, message: String): Logger =
-        this.also { writeColoredLine("[$sender] $message", BrightRedTxt, err) }
-    fun positive(sender: String, message: String) =
-        this.also { writeColoredLine("[$sender] $message", BrightGreenTxt, std) }
-    fun debug(sender: String, message: String) =
-        this.also { writeColoredLine("[$sender] $message", BrightWhiteTxt, std) }
-    fun debugData(data: Any) = this.also { writeColoredLine(data, BrightWhiteTxt, std) }
-
 }

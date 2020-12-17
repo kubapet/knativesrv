@@ -8,6 +8,7 @@ version = "1.0-SNAPSHOT"
 
 repositories {
     mavenCentral()
+    maven(url = "https://kotlin.bintray.com/kotlinx/")
 }
 
 kotlin {
@@ -25,6 +26,7 @@ kotlin {
             dependencies {
                 implementation(kotlin("stdlib-common"))
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.0.1")
+                implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.1.1")
                 implementation("com.benasher44:uuid:0.2.3")
             }
         }

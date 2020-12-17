@@ -1,3 +1,4 @@
+import Severity.*
 import Shared.logger
 import kotlinx.cinterop.*
 import kotlinx.serialization.encodeToString
@@ -36,7 +37,12 @@ data class HttpRequest(
     val headers: Map<String, String>
 )
 
-class Server(private val srvPort: Int, private val routingConfig: ResponseBuilder.() -> Unit) {
+class Server(
+    private val srvPort: Int,
+    private val numberOfWorkers: Int = 10,
+    private val queueSize: Int = 10,
+    private val routingConfig: ResponseBuilder.() -> Unit
+) {
     private var srvSocketFD: Int = 0
     private val futures = mutableListOf<Future<Unit>>()
 
@@ -46,7 +52,6 @@ class Server(private val srvPort: Int, private val routingConfig: ResponseBuilde
             sin_family = AF_INET.convert()
             sin_addr.s_addr = htonl(INADDR_ANY)
             sin_port = htons(srvPort.convert())
-            //memset(sin_zero.getPointer(this@memScoped), 0, sizeOf<sockaddr_in>().toULong())
         }
 
         srvSocketFD = socket(AF_INET, SOCK_STREAM, 0)
@@ -57,10 +62,10 @@ class Server(private val srvPort: Int, private val routingConfig: ResponseBuilde
         val bindResult = bind(srvSocketFD, srvAddress.ptr.reinterpret(), sizeOf<sockaddr_in>().convert())
         assert(bindResult, ServerError.BindingError)
 
-        val listenResult = listen(srvSocketFD, 10)
+        val listenResult = listen(srvSocketFD, queueSize)
         assert(listenResult, ServerError.ListeningError)
 
-        repeat(10) { workerId ->
+        repeat(numberOfWorkers) { workerId ->
             val workerContext = WorkerContext("worker-$workerId", srvSocketFD, routingConfig)
             val future = Worker.start().execute(TransferMode.SAFE, { workerContext.freeze() }) {
                 while(true) it.processRequest()
@@ -74,22 +79,22 @@ class Server(private val srvPort: Int, private val routingConfig: ResponseBuilde
 
 data class WorkerContext(val workerId: String, val srvSocketFD: Int, val routingConfig: ResponseBuilder.() -> Unit) {
     fun processRequest() = memScoped {
-        logger.positive(workerId, "waiting for connection")
+        logger(INFO, "waiting for connection", workerId)
 
         val clientAddress = alloc<sockaddr_in>()
         val addrLen = alloc<socklen_tVar> { value = sizeOf<sockaddr_in>().convert() }
         val clientFD = accept(srvSocketFD, clientAddress.ptr.reinterpret(), addrLen.ptr)
-        assert(clientFD, ServerError.AcceptConnectionError)
+        assert(clientFD, ServerError.AcceptConnectionError, workerId)
 
         val clientAddr = alloc<in_addr_tVar> { value = clientAddress.sin_addr.s_addr }
         val clientInfo = gethostbyaddr(clientAddr.ptr, sizeOf<in_addr_tVar>().convert(), AF_INET)
-        assert(clientInfo, ServerError.GetClientInfoError)
+        assert(clientInfo, ServerError.GetClientInfoError, workerId)
 
         val stream = fdopen(clientFD, "r+")
-        assert(stream, ServerError.OpenStreamError)
+        assert(stream, ServerError.OpenStreamError, workerId)
 
         val request = parseRequest(stream!!)
-        logger.debug(workerId, "recieved request:").debugData(request)
+        logger(DEBUG, "recieved request:\n$request", workerId)
 
         ResponseBuilder(request, stream).run(routingConfig)
 
@@ -105,14 +110,14 @@ data class WorkerContext(val workerId: String, val srvSocketFD: Int, val routing
         val requestLine = buffer.toKString().split(" ")
 
         if (requestLine.size != 3) {
-            logger.warn(workerId, "invalid request line:").debugData(requestLine)
+            logger(WARN, "invalid request line:\n$requestLine", workerId)
             HttpRequest(HttpRequestMethod.GET, "", "", emptyMap())
         } else {
             val headers = mutableMapOf<String, String>()
             while (fgets(buffer, bufferSize, stream)?.toKString() != "\r\n") {
                 val keyValueArray = buffer.toKString().split(": ")
                 if (keyValueArray.size != 2) {
-                    logger.warn(workerId, "invalid header line:").debugData(buffer.toKString())
+                    logger(WARN, "invalid header line:\n${buffer.toKString()}", workerId)
                 } else {
                     headers[keyValueArray[0]] = keyValueArray[1]
                 }
@@ -123,8 +128,8 @@ data class WorkerContext(val workerId: String, val srvSocketFD: Int, val routing
 }
 
 class ResponseBuilder(val request: HttpRequest, private val stream: CValuesRef<FILE>) {
-    fun okHeader(contentType: String, contentLength: size_t) = header(HttpStatus.Ok, contentType, contentLength)
-    fun header(status: HttpStatus, contentType: String, contentLength: size_t) {
+    fun okHeader(contentType: String, contentLength: Int) = header(HttpStatus.Ok, contentType, contentLength)
+    fun header(status: HttpStatus, contentType: String, contentLength: Int) {
         val header = """
         HTTP/1.1 ${status.code} ${status.shortMessage}
         Content-Type: $contentType
@@ -140,7 +145,7 @@ class ResponseBuilder(val request: HttpRequest, private val stream: CValuesRef<F
           <body>${status.code}: ${status.shortMessage}<p>${status.longMessage}: $cause</p></body>
         </html>
         """.trimIndent()
-        header(status, "text/html", html.length.convert())
+        header(status, "text/html", html.length)
         fputs(html + "\n\n", stream)
     }
 
@@ -149,7 +154,7 @@ class ResponseBuilder(val request: HttpRequest, private val stream: CValuesRef<F
     inline fun <reified T> json(data: T) = generic(Json.encodeToString(data), "application/json")
 
     fun generic(body: String, contentType: String) {
-        okHeader(contentType, body.length.convert())
+        okHeader(contentType, body.length)
         fprintf(stream, body)
     }
 
@@ -158,19 +163,29 @@ class ResponseBuilder(val request: HttpRequest, private val stream: CValuesRef<F
         stat(fileName, fileStatus.ptr)
         val fileSize = fileStatus.st_size
 
-        val buffer = allocArray<ByteVar>(fileSize)
         val ifd: CPointer<FILE>? = fopen(fileName, "r" )
-        fread(buffer, sizeOf<ByteVar>().convert(), fileSize.convert(), ifd)
-        fclose(ifd)
-
-        okHeader(contentType, fileSize.convert())
-        fwrite(buffer, sizeOf<ByteVar>().convert(), fileSize.convert(), stream)
+        if (ifd  != null) {
+            try {
+                val buffer = allocArray<ByteVar>(fileSize)
+                val fileSizeU: size_t = fileSize.convert()
+                val elementSizeU: size_t = sizeOf<ByteVar>().convert()
+                fread(buffer, elementSizeU, fileSizeU, ifd)
+                okHeader(contentType, fileSize.convert())
+                fwrite(buffer, elementSizeU, fileSizeU, stream)
+            }
+            finally {
+                fclose(ifd)
+            }
+        }
+        else {
+            errorPage("Requested file was not found on the server", HttpStatus.NotFound)
+        }
     }
 }
 
-private fun assert(value: Any?, error: ServerError) {
+private fun assert(value: Any?, error: ServerError, context: String? = null) {
     if (value == null || value is Int && value < 0) {
-        logger.error("dunno", error.longMessage)
+        logger(ERROR, error.longMessage, context)
         exitProcess(error.returnValue)
     }
 }

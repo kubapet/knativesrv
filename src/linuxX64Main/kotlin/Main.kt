@@ -1,3 +1,4 @@
+import Severity.*
 import Shared.logger
 import io.ktor.client.*
 import io.ktor.client.engine.curl.*
@@ -22,7 +23,8 @@ object Shared {
             x5t = null
         )))
     }.asCPointer()
-    private val loggerPtr = DetachedObjectGraph { Logger(stdout, stderr) }.asCPointer()
+
+    private val loggerPtr = DetachedObjectGraph { Logger() }.asCPointer()
 
     val jwks get() = DetachedObjectGraph<Jwks>(jwksPtr).attach()
     val logger get() = DetachedObjectGraph<Logger>(loggerPtr).attach()
@@ -33,7 +35,7 @@ val myKeyPair = RSAKeyPair.generateNew()
 
 fun main(args: Array<String>) {
     if (args.size != 1) {
-        logger.error("", "usage: server.kexe <port>\n")
+        logger(SEVERE, "usage: server.kexe <port>\n")
         exitProcess(1)
     }
 
