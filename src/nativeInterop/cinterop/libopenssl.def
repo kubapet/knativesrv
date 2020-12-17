@@ -1,4 +1,0 @@
-headers = openssl/rsa.h openssl/evp.h openssl/pem.h
-headerFilter = openssl/*
-compilerOpts.linux = -I/usr/include
-linkerOpts.linux = -L/usr/lib64 -lssl -lcrypto

@@ -1,6 +1,7 @@
-import Severity.*
+import LogSeverity.*
 import Shared.logger
 import kotlinx.cinterop.*
+import kotlinx.datetime.Clock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import platform.posix.*
@@ -9,9 +10,14 @@ import kotlin.system.exitProcess
 
 const val bufferSize = 1024
 
-enum class HttpRequestMethod {
-    GET, HEAD, POST, PUT, CONNECT, OPTIONS, TRACE, PATCH
-}
+data class HttpRequest(
+    val method: HttpRequestMethod,
+    val uri: String,
+    val version: String,
+    val headers: Map<String, String>
+)
+
+enum class HttpRequestMethod { GET, HEAD, POST, PUT, CONNECT, OPTIONS, TRACE, PATCH }
 
 enum class HttpStatus(val code: Int, val shortMessage: String, val longMessage: String) {
     Ok(200, "OK", ""),
@@ -30,12 +36,40 @@ enum class ServerError(val returnValue: Int, val longMessage: String) {
     OpenStreamError(52, "Unable to open stream for communication with client"),
 }
 
-data class HttpRequest(
-    val method: HttpRequestMethod,
-    val uri: String,
-    val version: String,
-    val headers: Map<String, String>
-)
+enum class LogSeverity { INFO, WARN, ERROR, SEVERE, DEBUG }
+
+data class LogRecord(val severity: LogSeverity, val message: Any, val context: Any)
+
+class Logger(
+    private val formatter: LogRecord.() -> String = {
+        "[${Clock.System.now()}] [${severity.name}] [$context] $message\n"
+    },
+    private val defaultSeverity: LogSeverity = INFO,
+    private val defaultContext: String = "main",
+    private val useErr: Boolean = true,
+    private val std: CValuesRef<FILE>? = stdout,
+    private val err: CValuesRef<FILE>? = stderr
+) {
+    operator fun invoke(
+        severity: LogSeverity? = null,
+        message: Any = "",
+        context: Any? = null,
+    ) {
+        val actualSeverity = severity ?: defaultSeverity
+
+        val logRecord = LogRecord(actualSeverity, message, context ?: defaultContext)
+        val output = if(useErr && severity in listOf(ERROR, SEVERE)) err else std
+        if (output != null) {
+            fprintf(output, formatter(logRecord))
+            fflush(output)
+        }
+    }
+}
+
+object Shared {
+    private val loggerPtr = DetachedObjectGraph { Logger() }.asCPointer()
+    val logger get() = DetachedObjectGraph<Logger>(loggerPtr).attach()
+}
 
 class Server(
     private val srvPort: Int,
